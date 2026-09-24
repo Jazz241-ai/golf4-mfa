@@ -86,9 +86,21 @@ static void refresh_speed(void) {
    СИНХРОНИЗАЦИЯ ЛАМП С ПОДСИСТЕМОЙ СООБЩЕНИЙ (по фронту)
 ============================================================================ */
 static uint32_t s_msg_state = 0;
+static uint32_t oil_since = 0;   /* <<< ЭТА СТРОКА ПОТЕРЯЛАСЬ */
 static void sync_messages(void) {
     uint32_t desired = 0;
-    if (g_warn_lamps & ((1u<<LAMP_OIL_PRESS)|(1u<<LAMP_OIL_DYN))) desired |= (1u<<MSG_OIL_PRESS);
+    uint32_t now = HAL_GetTick();
+
+        /* Масло: бит должен держаться > 2.5 c (дольше bulb check)
+           ИЛИ двигатель должен быть заведён */
+        if (g_warn_lamps & (1u << LAMP_OIL_PRESS)) {
+            if (oil_since == 0) oil_since = now;
+            if (g_motor_can.engine_running || (now - oil_since) > 2500)
+                desired |= (1u << MSG_OIL_PRESS);
+        } else {
+            oil_since = 0;   /* бит погас -> сообщение ОБЯЗАТЕЛЬНО гасим */
+        }
+
     if (g_warn_lamps & (1u<<LAMP_COOL_HOT))    desired |= (1u<<MSG_COOLANT);
     if (g_warn_lamps & (1u<<LAMP_COOL_LEVEL))  desired |= (1u<<MSG_COOL_LEVEL);
     if (g_warn_lamps & (1u<<LAMP_CHARGE))      desired |= (1u<<MSG_CHARGE);
