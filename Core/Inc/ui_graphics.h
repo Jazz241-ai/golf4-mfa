@@ -127,13 +127,13 @@ const char* Msg_Text(uint8_t id);   /* <-- добавить */
 uint8_t     Msg_Sev(uint8_t id);    /* <-- добавить */
 
 /* ==================== Сообщения ==================== */
-#define MSG_COUNT 23
+#define MSG_COUNT 24
 enum {
     MSG_WASHER=0, MSG_PADS, MSG_BELT, MSG_BULB, MSG_OIL_PRESS, MSG_COOLANT,
     MSG_TPMS_WARN, MSG_TPMS_CAL,
     MSG_CHARGE, MSG_COOL_LEVEL, MSG_ABS, MSG_ESP, MSG_BRAKE, MSG_AIRBAG,
     MSG_MIL, MSG_EPC, MSG_CAT, MSG_FUEL, MSG_STEER, MSG_AWD, MSG_LEVEL,
-    MSG_EPB, MSG_GEARBOX
+    MSG_EPB, MSG_GEARBOX, MSG_ESP_OFF
 };
 #define MSG_SEV_INFO 0
 #define MSG_SEV_WARN 1

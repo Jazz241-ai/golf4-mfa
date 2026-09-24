@@ -129,12 +129,13 @@ static const struct { uint8_t sev; const char* txt; } MSG_DEF[MSG_COUNT] = {
  { MSG_SEV_WARN, "Неисправность регулировки уровня / пневмоподвески." },
  { MSG_SEV_WARN, "Неисправность электромеханического стояночного тормоза (EPB)." },
  { MSG_SEV_WARN, "АКПП: аварийный режим (Notlauf). Обратитесь в сервис." },
+ { MSG_SEV_INFO, "ESP отключена кнопкой. Стабилизация неактивна." },
 };
 static const uint8_t MSG_ICON[MSG_COUNT] = {
  FICON_WASHER, FICON_BRAKE, FICON_BELT,  FICON_LIGHT, FICON_OIL,  FICON_TEMP,
  FICON_TIRE,   FICON_TIRE,  FICON_BATT,  FICON_TEMP,  FICON_ABS,  FICON_ESP,
  FICON_BRAKE,  FICON_AIRBAG,FICON_ENGINE,FICON_ENGINE,FICON_ENGINE,FICON_FUEL,
- FICON_STEER,  FICON_AWD,   FICON_LEVEL, FICON_EPB,   FICON_GEAR,
+ FICON_STEER,  FICON_AWD,   FICON_LEVEL, FICON_EPB,   FICON_GEAR, FICON_ESP,
 };
 uint8_t Msg_Icon(uint8_t id){ return (id < MSG_COUNT) ? MSG_ICON[id] : FICON_GENERAL; }
 static uint8_t  msg_active = 0;

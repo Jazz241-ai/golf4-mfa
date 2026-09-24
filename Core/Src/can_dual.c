@@ -107,10 +107,14 @@ static void sync_messages(void) {
     if (g_fault_flags & (1u<<FAULT_GEAR_NOTLAUF)) desired |= (1u<<MSG_GEARBOX);
     if (g_warn_lamps & ((1u<<LAMP_TIRE)|(1u<<LAMP_DDS))) desired |= (1u<<MSG_TPMS_WARN);
     if (g_warn_lamps & ((1u<<LAMP_LOWBEAM_L)|(1u<<LAMP_LOWBEAM_R))) desired |= (1u<<MSG_BULB);
-    uint32_t changed = desired ^ (uint32_t)s_msg_state;
-    for (uint8_t m = 0; m < MSG_COUNT; m++)
-        if (changed & (1u<<m)) { if (desired & (1u<<m)) Msg_Raise(m); else Msg_Clear(m); }
-    s_msg_state = (uint8_t)desired;
+
+    if (g_motor_can.esp_off)    desired |= (1u << MSG_ESP_OFF);
+    if (g_motor_can.esp_active) desired |= (1u << MSG_ESP);
+    /* ¬ конце функции Ч двусторонн€€ синхронизаци€ (иначе CRIT-сообщени€ прилипают): */
+       for (uint8_t i = 0; i < MSG_COUNT; i++) {
+           if (((desired >> i) & 1) && !Msg_IsActive(i))  Msg_Raise(i);
+           if (!((desired >> i) & 1) && Msg_IsActive(i))  Msg_Clear(i);
+       }
 }
 
 /* ============================================================================
@@ -217,6 +221,7 @@ static void can_dispatch(uint32_t id, uint8_t* d, uint8_t len) {
     case 0x1A0:
         if (len >= 7) {
             g_motor_can.speed_brake = SigPhys(d,len,17,15,1,0,0.01f,0); t_sp_b = now;
+            g_motor_can.esp_off = (d[1] & 0x02) != 0;
             g_motor_can.msr_torque  = SigPhys(d,len,48,8,1,0,0.39f,0);
             g_motor_can.abs_diag    = SigBool(d,len,15,1);
             g_motor_can.esp_active  = SigBool(d,len,4,1);

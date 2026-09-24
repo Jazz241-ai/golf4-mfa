@@ -40,6 +40,7 @@ typedef struct {
     uint32_t wheel_time;
     float brake_pressure, yaw_rate, brake_temp_front, msr_torque;
     bool abs_active, esp_active, asr_req, abs_diag;
+    bool esp_off;          /* НОВОЕ: ESP отключена кнопкой (0x1A0, d[1] bit1) */
     /* Lenkwinkel (0xC2) */
     float steering_speed;
     /* Getriebe (0x440/0x540) */
