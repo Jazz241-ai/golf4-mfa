@@ -33,6 +33,13 @@ typedef struct __attribute__((packed)) {
     uint16_t final_drive;   /* 0.001   */
     uint16_t wheel_mm;
     uint16_t ratios[6];     /* 0.001   */
+    uint8_t  gear_count;
+    // === TPMS ===
+        uint8_t  tpms_en;
+        uint8_t  tpms_calibrated;
+        int16_t  tpms_p_ref[4];     // давление * 10
+        int16_t  tpms_dev_ref[4];   // дельта * 10000
+
 } Settings_t;   /* 37 байт -> пишем 64 (2 flashword по 32 Ѕ) */
 
 #define CRC_LEN offsetof(Settings_t, crc16)
@@ -59,6 +66,10 @@ static void Build(Settings_t* s) {
     memcpy(s->main_visible, g_main_param_visible, PARAM_COUNT);
     s->top_icons = g_top_icons; s->top_left = (uint8_t)g_top_left; s->top_right = (uint8_t)g_top_right;
     s->bot_icons = g_bot_icons;
+    s->bot_icons = g_bot_icons;
+    for(uint8_t i = 0; i < 4; i++) {
+        s->bot_slots[i] = (uint8_t)g_bot_slots[i];
+    }
     for(uint8_t i=0;i<6;i++) s->ratios[i] = (uint16_t)(g_calib.ratios[i]*1000.0f);
     s->vbat_off    = (int16_t)(g_calib.vbat_offset * 100.0f);
     s->speed_src   = g_calib.speed_src;
@@ -66,7 +77,7 @@ static void Build(Settings_t* s) {
     s->fuel_coef   = (uint16_t)(g_calib.fuel_coef  * 1000.0f);
     s->final_drive = (uint16_t)(g_calib.final_drive * 1000.0f);
     s->wheel_mm    = g_calib.wheel_mm;
-    for(uint8_t i=0;i<5;i++) s->ratios[i] = (uint16_t)(g_calib.ratios[i]*1000.0f);
+
     s->shift_en   = g_shift_assist_enabled;
     s->shift_up   = g_shift_up_rpm;
     s->shift_down = g_shift_down_rpm;
@@ -75,6 +86,16 @@ static void Build(Settings_t* s) {
                     (g_misc.belt_en?8:0)|(g_misc.mirror_en?16:0);
     s->menu_to_sec = g_misc.menu_to_sec;
     s->msg_to_sec  = g_misc.msg_to_sec;
+    // TPMS
+    s->tpms_en = g_tpms.en;
+    s->tpms_calibrated = g_tpms.calibrated;
+    for (uint8_t i = 0; i < 4; i++) {
+        s->tpms_p_ref[i] = (int16_t)(g_tpms.p_ref[i] * 10.0f);
+        s->tpms_dev_ref[i] = (int16_t)(g_tpms.dev_ref[i] * 10000.0f);
+    }
+    for(uint8_t i=0;i<6;i++) s->ratios[i] = (uint16_t)(g_calib.ratios[i]*1000.0f);
+    s->gear_count = g_calib.gear_count;  //  ƒќЅј¬»“№
+    s->vbat_off    = (int16_t)(g_calib.vbat_offset * 100.0f);
 }
 
 static Settings_t last_saved;
@@ -135,6 +156,20 @@ void Settings_Load(void) {
         g_misc.msg_to_sec  = (ram.msg_to_sec >=1 && ram.msg_to_sec <=30)?ram.msg_to_sec:3;
         for(uint8_t i=0;i<6;i++)
             g_calib.ratios[i] = (ram.ratios[i]>=500 && ram.ratios[i]<=5000) ? ram.ratios[i]/1000.0f : 1.0f;
+
+        // TPMS
+        g_tpms.en = ram.tpms_en;
+        g_tpms.calibrated = ram.tpms_calibrated;
+        if (g_tpms.calibrated) {
+            g_tpms.state = TPMS_ST_MONITOR;
+            for (uint8_t i = 0; i < 4; i++) {
+                g_tpms.p_ref[i] = ram.tpms_p_ref[i] / 10.0f;
+                g_tpms.dev_ref[i] = ram.tpms_dev_ref[i] / 10000.0f;
+            }
+        }
+        for(uint8_t i=0;i<6;i++)
+            g_calib.ratios[i] = (ram.ratios[i]>=500 && ram.ratios[i]<=5000) ? ram.ratios[i]/1000.0f : 1.0f;
+        g_calib.gear_count = (ram.gear_count == 5 || ram.gear_count == 6) ? ram.gear_count : 5;  //  ƒќЅј¬»“№
     }
     /* иначе Ч остаютс€ дефолты из инициализаторов глобалов */
 }
