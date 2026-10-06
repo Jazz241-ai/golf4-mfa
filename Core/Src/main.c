@@ -188,23 +188,21 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  /* јсинхронный запуск K-Line диалога */
-	      if (g_kline_dialog_running) {
-	          uint8_t k1=0, k2=0;
-	          uint8_t res = KLine_KWP1281_Dialog(0x01, &k1, &k2);
-	          g_kline_kb1 = k1;
-	          g_kline_kb2 = k2;
-	          g_kline_dialog = (res < 3) ? 1 : 0;
-	          g_kline_ackmode = res;
-	          g_kline_dialog_running = 0;
-	      }
-
-	      /* ==================== ќЅ–јЅќ“„» » ƒ»ј√Ќќ—“» » ==================== */
-	      /* „тение блоков измерений */
-	      if (g_diag_req_meas) {
-	          g_diag_req_meas = 0;
-	          KLine_GetMeasGroup(g_diag_addr, g_diag_group, &g_diag_meas);
-	      }
+      /* ќбработка диалога K-Line (MotorInfo) */
+      if (g_kline_dialog_running) {
+          uint8_t k1 = 0, k2 = 0;
+          uint8_t res = KLine_KWP1281_Dialog(0x01, &k1, &k2);
+          g_kline_kb1 = k1;  g_kline_kb2 = k2;
+          g_kline_dialog = (res < 3) ? 1 : 0;
+          g_kline_ackmode = res;
+          g_kline_dialog_running = 0;
+          if (res < 3) {
+              uint8_t len = 0;
+              KWP1281_ReadIdent((char*)g_kl_ident, sizeof(g_kl_ident), &len);
+              g_kl_ident_len = len;
+              KWP1281_End();
+          }
+      }
 
 	      /* „тение ошибок */
 	      if (g_diag_req_dtc) {
@@ -222,6 +220,41 @@ int main(void)
 	          if (g_diag_clr_result == 1) {
 	              g_diag_dtcs.count   = 0;
 	              g_diag_dtc_result   = 0;   // список недействителен -> экран снова предложит "ќ  = прочитать"
+	          }
+	      }
+
+
+	        /* ==== LIVE-поток блоков измерений ==== */
+	        if (g_diag_meas_live && !g_diag_req_dtc && !g_diag_req_clr &&
+	            !g_kline_dialog_running && !g_kl_run_req) {
+	            if (!KLine_MeasStream_IsOpen()) {
+	                static uint32_t last_try = 0;
+	                if (HAL_GetTick() - last_try >= 1000) { last_try = HAL_GetTick(); KLine_MeasStream_Start(g_diag_addr); }
+	            } else {
+	                static uint32_t last_poll = 0;
+	                if (HAL_GetTick() - last_poll >= 250) { last_poll = HAL_GetTick(); KLine_MeasStream_Poll(g_diag_group, &g_diag_meas); }
+	            }
+	        } else if (!g_diag_meas_live && KLine_MeasStream_IsOpen()) {
+	            KLine_MeasStream_Stop();   /* страховка при нештатном выходе */
+	        }
+	      /* ==================== K-Line DEBUG: запрос идентификации ==================== */
+	      if (g_kl_run_req) {
+	          g_kl_run_req = 0;                 /* <-- ќЅя«ј“≈Ћ№Ќќ сбросить флаг запроса */
+	          g_kl_ident_len = 0;
+
+	          uint8_t k1 = 0, k2 = 0;
+	          uint8_t res = KLine_KWP1281_Dialog(g_diag_addr, &k1, &k2);  /* выбранный ЁЅ”, не только 0x01 */
+	          g_kline_kb1 = k1;
+	          g_kline_kb2 = k2;
+
+	          if (res < 3) {                    /* св€зь установлена */
+	              uint8_t len = 0;
+	              KWP1281_ReadIdent((char*)g_kl_ident, sizeof(g_kl_ident), &len);
+	              g_kl_ident_len = len;
+	              KWP1281_End();                /* корректно завершаем сессию */
+	              g_kl_state = 2;               /* успех -> экран покажет KB1/KB2 + ident */
+	          } else {
+	              g_kl_state = 3;               /* "ЁЅ” молчит" */
 	          }
 	      }
 	      /* =============================================================== */

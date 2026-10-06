@@ -27,29 +27,19 @@ static volatile uint8_t  auto_ack_mode = 0;
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
         uint8_t received = rx_byte_tmp;
-
         if (auto_ack_mode) {
-            // РЕЖИМ ДИАЛОГА: Немедленный ACK
             uint8_t ack = (uint8_t)~received;
-
-            // Прямая запись для скорости
             while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TXE) == RESET);
             huart2.Instance->TDR = ack;
-
-            // Ждем эхо ACK (синхронизация)
             uint32_t t0 = HAL_GetTick();
-            while (HAL_GetTick() - t0 < 20) {
+            while (HAL_GetTick() - t0 < 2) {
                 if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE)) {
                     uint8_t echo = (uint8_t)(huart2.Instance->RDR & 0xFF);
                     if (echo == ack) break;
                 }
             }
         }
-
-        // В любом случае кладем принятый байт в кольцевой буфер
         rx_buf[rx_head++ & (RX_SZ - 1)] = received;
-
-        // Перезапуск приема
         if (HAL_UART_Receive_IT(&huart2, &rx_byte_tmp, 1) != HAL_OK) {
             __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
         }
@@ -58,11 +48,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART2) {
-        // Читаем ошибочный байт, чтобы сбросить флаг ORE
         volatile uint8_t tmp = (uint8_t)(huart2.Instance->RDR & 0xFF);
-        (void)tmp; // Подавляем warning unused variable
+        (void)tmp;
         __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_PEF);
-
         if (HAL_UART_Receive_IT(&huart2, &rx_byte_tmp, 1) != HAL_OK) {
             __HAL_UART_ENABLE_IT(&huart2, UART_IT_RXNE);
         }
@@ -313,44 +301,37 @@ uint8_t KLine_KWP1281_Connect(uint8_t addr, uint8_t mode, uint8_t *kb1, uint8_t 
     return 0;
 }
 
-uint8_t KLine_KWP1281_Dialog(uint8_t addr, uint8_t *kb1, uint8_t *kb2) {
+/*uint8_t KLine_KWP1281_Dialog(uint8_t addr, uint8_t *kb1, uint8_t *kb2) {
     if (KLine_KWP1281_Connect(addr, 0, kb1, kb2)) return 0;
     HAL_Delay(200);
     if (KLine_KWP1281_Connect(addr, 0, kb1, kb2)) return 0;
     return 3;
-}
+}*/
 
 uint8_t KWP1281_RecvBlock(uint8_t *title, uint8_t *data, uint8_t cap, uint8_t *dlen, uint32_t timeout_ms) {
     uint8_t L, ctr, t, b;
+    auto_ack_mode = 1;
 
-    auto_ack_mode = 1; // Включаем авто-ответ
-
-    if (rx_byte_auto_ack(&L, timeout_ms) < 0) { auto_ack_mode = 0; return 0; }
-    if (L < 3 || L > 63) { auto_ack_mode = 0; return 0; }
-
+    if (rx_byte_auto_ack(&L, timeout_ms) < 0)   { auto_ack_mode = 0; return 0; }
+    if (L < 3 || L > 63)                        { auto_ack_mode = 0; return 0; }
     if (rx_byte_auto_ack(&ctr, timeout_ms) < 0) { auto_ack_mode = 0; return 0; }
     blk_counter = ctr;
+    if (rx_byte_auto_ack(&t, timeout_ms) < 0)   { auto_ack_mode = 0; return 0; }
 
-    if (rx_byte_auto_ack(&t, timeout_ms) < 0) { auto_ack_mode = 0; return 0; }
-
-    uint8_t nd = L - 3;
-    uint8_t got = 0;
+    uint8_t nd = L - 3, got = 0;
     for (uint8_t i = 0; i < nd; i++) {
         if (rx_byte_auto_ack(&b, timeout_ms) < 0) { auto_ack_mode = 0; return 0; }
         if (data && got < cap) data[got++] = b;
     }
 
-    // ВЫКЛЮЧАЕМ авто-ответ перед чтением 0x03
-    auto_ack_mode = 0;
-
+    auto_ack_mode = 0;                 /* 0x03 не ACKуется */
     int16_t c = ring_get(timeout_ms);
     if (c < 0) return 0;
     b = (uint8_t)c;
-
     if (b != 0x03) return 0;
 
     if (title) *title = t;
-    if (dlen) *dlen = got;
+    if (dlen)  *dlen  = got;
     return 1;
 }
 
@@ -383,19 +364,40 @@ uint8_t KWP1281_SendBlock(uint8_t title, const uint8_t *data, uint8_t n) {
 
 uint8_t KWP1281_ReadIdent(char *str, uint8_t cap, uint8_t *len) {
     uint8_t total = 0;
+    uint8_t prompted = 0;
+
     for (uint8_t b = 0; b < 10; b++) {
         uint8_t t = 0, dl = 0;
         uint8_t data[32];
-        if (!KWP1281_RecvBlock(&t, data, 32, &dl, b ? 60 : 800)) break;
-        if (t != 0xF6) break;
-        for (uint8_t i = 0; i < dl && total + 1 < cap; i++) str[total++] = (char)data[i];
+
+        /* 1) пассивно ждём следующий блок 0xF6 (пауза между блоками может быть >60 мс) */
+        if (!KWP1281_RecvBlock(&t, data, 32, &dl, b ? 150 : 800)) {
+            /* 2) тишина: если данные уже есть и мы ещё не "подталкивали" ЭБУ после
+                   последнего блока — шлём Ack (0x09) и ждём ещё раз */
+            if (total && !prompted) {
+                prompted = 1;
+                KWP1281_AckBlock();
+                if (!KWP1281_RecvBlock(&t, data, 32, &dl, 150)) break;
+            } else {
+                break;   /* идентификатор закончился */
+            }
+        }
+
+        if (t != 0xF6) break;   /* пришёл не-ASCII блок — ident завершён */
+
+        for (uint8_t i = 0; i < dl && total + 1 < cap; i++)
+            str[total++] = (char)data[i];
+
+        prompted = 0;   /* после каждого нового блока снова разрешаем один Ack */
     }
+
     str[total] = 0;
     *len = total;
     return total > 0;
 }
 
 uint8_t KWP1281_ReadGroup(uint8_t group, uint8_t *resp, uint8_t *rlen) {
+    KLine_Flush();                      /* линия после ident-таймаута тихая — чистим кольцо */
     HAL_Delay(5);
     if (!KWP1281_SendBlock(0x29, &group, 1)) return 0;
     uint8_t t = 0, dl = 0;
@@ -444,48 +446,142 @@ const KLineEcu_t KLINE_ECU_LIST[KLINE_ECU_COUNT] = {
  *   0x15 = В        (raw * 0.001)       <- раньше ошибочно считали барами
  * Остальные коды - предварительные, калибровать по RAW-строке на экране.
  */
+/* KWP1281: 1-й байт канала = ДЕСЯТИЧНЫЙ показатель (1..70).
+ * a = 2-й байт, b = 3-й. Формулы — таблица blafusel/opendiag ( = проверено автором). */
 static void parse_meas_field(uint8_t type, uint8_t a, uint8_t b, float *v, char *unit) {
-    uint16_t raw = ((uint16_t)a << 8) | b;
+    float fa = a, fb = b;
     switch (type) {
-        case 0x01: *v = raw * 0.25f;             snprintf(unit, 12, "об/мин"); break; // rpm  (подтв.)
-        case 0x02: *v = raw * 100.0f / 65535.0f; snprintf(unit, 12, "%%");     break; // %    (предв.)
-        case 0x03: *v = (float)(int16_t)raw * 0.01f; snprintf(unit, 12, "°");  break; // УОЗ  (предв.)
-        case 0x04: *v = raw * 0.75f - 48.0f;     snprintf(unit, 12, "°C");     break; // темп.(предв.)
-        case 0x05: *v = raw * 0.75f - 48.0f;     snprintf(unit, 12, "°C");     break; // темп.(подтв.)
-        case 0x07: *v = raw * 0.01f;             snprintf(unit, 12, "км/ч");   break; // скор.(предв.)
-        case 0x08: *v = raw;                     snprintf(unit, 12, "км");     break; // пробег
-        case 0x15: *v = raw * 0.001f;            snprintf(unit, 12, "В");      break; // напр.(подтв.)
-        case 0x21: *v = raw * 0.01f;             snprintf(unit, 12, "мс");     break; // впрыск (предв.)
-        case 0x33: *v = raw * 0.01f;             snprintf(unit, 12, "с");      break; // время (предв.)
-        default:   *v = raw;                     snprintf(unit, 12, "raw");    break;
+    case 1:  *v = 0.2f*fa*fb;                 snprintf(unit,12,"об/мин"); break; /*  */
+    case 2:  *v = fa*0.002f*fb;               snprintf(unit,12,"%");      break; /*  нагрузка */
+    case 3:  *v = 0.002f*fa*fb;               snprintf(unit,12,"°");      break;
+    case 4:  *v = ((fb>127)?fb-127:127-fb)*0.01f*fa; snprintf(unit,12,(fb>127)?"ATDC":"BTDC"); break;
+    case 5:  *v = fa*(fb-100.0f)*0.1f;        snprintf(unit,12,"°C");     break; /*  */
+    case 6:  *v = 0.001f*fa*fb;               snprintf(unit,12,"В");      break; /*  */
+    case 7:  *v = 0.01f*fa*fb;                snprintf(unit,12,"км/ч");   break; /*  */
+    case 8:  *v = 0.1f*fa*fb;                 snprintf(unit,12,"");       break;
+    case 9:  *v = (fb-127.0f)*0.02f*fa;       snprintf(unit,12,"°");      break;
+    case 10: *v = (b==0)?0:1;                 snprintf(unit,12,(b==0)?"COLD":"WARM"); break;
+    case 11: *v = 0.0001f*fa*(fb-128.0f)+1.0f;snprintf(unit,12,"-");      break;
+    case 12: *v = 0.001f*fa*fb;               snprintf(unit,12,"Ом");     break;
+    case 13: *v = (fb-127.0f)*0.001f*fa;      snprintf(unit,12,"мм");     break;
+    case 14: *v = 0.005f*fa*fb;               snprintf(unit,12,"бар");    break;
+    case 15: *v = 0.01f*fa*fb;                snprintf(unit,12,"мс");     break;
+    case 16: *v = b;                          snprintf(unit,12,"биты");   break;
+    case 17: *v = 0;                          snprintf(unit,12,"chr");    break;
+    case 18: *v = 0.04f*fa*fb;                snprintf(unit,12,"мбар");   break;
+    case 19: *v = fa*fb*0.01f;                snprintf(unit,12,"л");      break; /*  */
+    case 20: *v = fa*(fb-128.0f)/128.0f;      snprintf(unit,12,"%");      break;
+    case 21: *v = 0.001f*fa*fb;               snprintf(unit,12,"В");      break;
+    case 22: *v = 0.001f*fa*fb;               snprintf(unit,12,"мс");     break;
+    case 23: *v = fb/256.0f*fa;               snprintf(unit,12,"%");      break;
+    case 24: *v = 0.001f*fa*fb;               snprintf(unit,12,"А");      break;
+    case 25: *v = (fb*1.421f)+(fa/182.0f);    snprintf(unit,12,"г/с");    break;
+    case 26: *v = fb-fa;                      snprintf(unit,12,"C");      break;
+    case 27: *v = ((fb>128)?fb-128:128-fb)*0.01f*fa; snprintf(unit,12,(fb<128)?"ATDC":"BTDC"); break;
+    case 28: *v = fb-fa;                      snprintf(unit,12,"-");      break;
+    case 29: *v = (b<a)?1:2;                  snprintf(unit,12,(b<a)?"KF1":"KF2"); break;
+    case 30: *v = fb/12.0f*fa;                snprintf(unit,12,"°кв");    break;
+    case 31: *v = fb/2560.0f*fa;              snprintf(unit,12,"°C");     break;
+    case 32: *v = (b>128)?(float)(int8_t)b:fb; snprintf(unit,12,"-");     break;
+    case 33: *v = (a==0)?100.0f*fb:100.0f*fb/fa; snprintf(unit,12,"%");   break; /*  */
+    case 34: *v = (fb-128.0f)*0.01f*fa;       snprintf(unit,12,"кВт");    break;
+    case 35: *v = 0.01f*fa*fb;                snprintf(unit,12,"л/ч");    break; /*  */
+    case 36: *v = fa*2560.0f+fb*10.0f;        snprintf(unit,12,"км");     break; /*  пробег */
+    case 37: *v = 0;                          snprintf(unit,12,"OilPr"); break;
+    case 38: *v = (fb-128.0f)*0.001f*fa;      snprintf(unit,12,"°кв");    break;
+    case 39: *v = fb/256.0f*fa;               snprintf(unit,12,"мг/ч");   break;
+    case 40: *v = fb*0.1f+(25.5f*fa)-400.0f;  snprintf(unit,12,"А");      break;
+    case 41: *v = fb+fa*255.0f;               snprintf(unit,12,"Ач");     break;
+    case 42: *v = fb*0.1f+(25.5f*fa)-400.0f;  snprintf(unit,12,"кВт");    break;
+    case 43: *v = fb*0.1f+(25.5f*fa);         snprintf(unit,12,"В");      break;
+    case 44: *v = fa*100.0f+fb;               snprintf(unit,12,"ч:м");    break; /*  */
+    case 45: *v = 0.1f*fa*fb/100.0f;          snprintf(unit,12,"");       break;
+    case 46: *v = (fa*fb-3200.0f)*0.0027f;    snprintf(unit,12,"°кв");    break;
+    case 47: *v = (fb-128.0f)*fa;             snprintf(unit,12,"мс");     break;
+    case 48: *v = fb+fa*255.0f;               snprintf(unit,12,"-");      break;
+    case 49: *v = (fb/4.0f)*fa*0.1f;          snprintf(unit,12,"мг/ч");   break;
+    case 50: *v = (a==0)?(fb-128.0f)/0.01f:(fb-128.0f)/(0.01f*fa); snprintf(unit,12,"мбар"); break;
+    case 51: *v = ((fb-128.0f)/255.0f)*fa;    snprintf(unit,12,"мг/ч");   break;
+    case 52: *v = fb*0.02f*fa-fa;             snprintf(unit,12,"Нм");     break;
+    case 53: *v = (fb-128.0f)*1.4222f+0.006f*fa; snprintf(unit,12,"г/с"); break;
+    case 54: *v = fa*256.0f+fb;               snprintf(unit,12,"шт");     break;
+    case 55: *v = fa*fb/200.0f;               snprintf(unit,12,"с");      break;
+    case 56: *v = fa*256.0f+fb;               snprintf(unit,12,"WSC");    break;
+    case 57: *v = fa*256.0f+fb+65536.0f;      snprintf(unit,12,"WSC");    break;
+    case 58: *v = (b>128)?1.0225f*(256.0f-fb):1.0225f*fb; snprintf(unit,12,"1/с"); break;
+    case 59: *v = (fa*256.0f+fb)/32768.0f;    snprintf(unit,12,"-");      break;
+    case 60: *v = (fa*256.0f+fb)*0.01f;       snprintf(unit,12,"с");      break;
+    case 61: *v = (a==0)?(fb-128.0f):(fb-128.0f)/fa; snprintf(unit,12,"-"); break;
+    case 62: *v = 0.256f*fa*fb;               snprintf(unit,12,"С");      break;
+    case 63: *v = 0;                          snprintf(unit,12,"txt");    break;
+    case 64: *v = fa+fb;                      snprintf(unit,12,"Ом");     break; /*  */
+    case 65: *v = 0.01f*fa*(fb-127.0f);       snprintf(unit,12,"мм");     break;
+    case 66: *v = (fa*fb)/511.12f;            snprintf(unit,12,"В");      break;
+    case 67: *v = (640.0f*fa)+fb*2.5f;        snprintf(unit,12,"°");      break;
+    case 68: *v = (256.0f*fa+fb)/7.365f;      snprintf(unit,12,"°/с");    break;
+    case 69: *v = (256.0f*fa+fb)*0.3254f;     snprintf(unit,12,"бар");    break;
+    case 70: *v = (256.0f*fa+fb)*0.192f;      snprintf(unit,12,"м/с2");   break;
+    default: *v = fa*256.0f+fb;               snprintf(unit,12,"raw");    break;
     }
 }
 
-uint8_t KLine_GetMeasGroup(uint8_t addr, uint8_t group, KLineMeas_t *out) {
-    uint8_t k1 = 0, k2 = 0;
-    if (KLine_KWP1281_Dialog(addr, &k1, &k2) > 2) { out->ok = 0; return 0; }
+/* ==== LIVE-поток: сессия держится открытой, группы опрашиваются без реконнекта ==== */
+static uint8_t s_stream_open = 0;
 
-    char dummy[96]; uint8_t dl = 0;
-    KWP1281_ReadIdent(dummy, sizeof(dummy), &dl);   // слив ident-блоков
-
-    uint8_t resp[32], rlen = 0;
-    if (!KWP1281_ReadGroup(group, resp, &rlen)) { KWP1281_End(); out->ok = 0; return 0; }
-    KWP1281_End();
-
+static void meas_fill(KLineMeas_t *out, uint8_t group, const uint8_t *resp) {
+    out->ok = 1;
     out->group = group;
-    if (rlen < 12) { out->ok = 0; return 0; }        // БЫЛО 13 — это и ломало всё
-
     for (uint8_t ch = 0; ch < 4; ch++) {
-        uint8_t  t = resp[ch * 3];
-        uint8_t  a = resp[1 + ch * 3];
-        uint8_t  b = resp[2 + ch * 3];
+        uint8_t t = resp[ch*3], a = resp[1+ch*3], b = resp[2+ch*3];
         out->type[ch] = t;
         out->raw[ch]  = ((uint16_t)a << 8) | b;
-        parse_meas_field(t, a, b, &out->val[ch], out->unit[ch]);
+        parse_meas_field(t, a, b, &out->val[ch], &out->unit[ch][0]);
     }
-    out->ok = 1;
+}
+
+uint8_t KLine_MeasStream_Start(uint8_t addr) {
+    uint8_t k1 = 0, k2 = 0;
+    if (KLine_KWP1281_Dialog(addr, &k1, &k2) > 2) return 0;
+    char dummy[96]; uint8_t dl = 0;
+    KWP1281_ReadIdent(dummy, sizeof(dummy), &dl);   /* слив ident один раз */
+    s_stream_open = 1;
     return 1;
 }
+
+void KLine_MeasStream_Stop(void) {
+    if (s_stream_open) { KWP1281_End(); s_stream_open = 0; }
+}
+
+uint8_t KLine_MeasStream_IsOpen(void) { return s_stream_open; }
+
+uint8_t KLine_MeasStream_Poll(uint8_t group, KLineMeas_t *out) {
+    if (!s_stream_open) return 0;
+    uint8_t resp[32], rlen = 0;
+    if (!KWP1281_SendBlock(0x29, &group, 1))        { s_stream_open = 0; return 0; }
+    uint8_t t = 0, dl = 0;
+    if (!KWP1281_RecvBlock(&t, resp, 32, &dl, 300)) { s_stream_open = 0; return 0; }
+    if (t != 0xE7 || dl < 12)                       { s_stream_open = 0; return 0; }
+    meas_fill(out, group, resp);
+    return 1;
+}
+
+
+
+
+
+uint8_t KLine_KWP1281_DialogM(uint8_t addr, uint8_t mode, uint8_t *kb1, uint8_t *kb2) {
+    if (KLine_KWP1281_Connect(addr, mode, kb1, kb2)) return 0;
+    HAL_Delay(200);
+    if (KLine_KWP1281_Connect(addr, mode, kb1, kb2)) return 0;
+    return 3;
+}
+/* старая обёртка = режим 0 */
+uint8_t KLine_KWP1281_Dialog(uint8_t addr, uint8_t *kb1, uint8_t *kb2) {
+    return KLine_KWP1281_DialogM(addr, 0, kb1, kb2);
+}
+
+
+
 
 uint8_t KLine_GetDtcList(uint8_t addr, KLineDtcList_t *out) {
     uint8_t k1 = 0, k2 = 0;
